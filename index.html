@@ -1934,12 +1934,54 @@ const QUESTIONS = [
 ];
 
 // ═══════════════════════════════════════════════
+// GOOGLE SHEETS CONFIG
+// ► Tragen Sie nach dem Deployment Ihre Web-App-URL ein:
+// ═══════════════════════════════════════════════
+const SHEETS_URL = 'IHRE_APPS_SCRIPT_URL_HIER_EINTRAGEN';
+
+// ═══════════════════════════════════════════════
 // QUIZ STATE
 // ═══════════════════════════════════════════════
 let userName = '';
 let currentQ = 0;
-let answers  = [];   // {q, chosen, correct}
+let answers  = [];
 let quizDone = false;
+
+// ── QUIZ PERSISTENCE ──
+const Q1_KEY = 'nwoe_s1_quiz';
+function saveQuiz1() {
+  try { localStorage.setItem(Q1_KEY, JSON.stringify({ userName, currentQ, answers, quizDone })); } catch(e) {}
+}
+function checkQuizResume1() {
+  try {
+    const s = JSON.parse(localStorage.getItem(Q1_KEY) || 'null');
+    if (!s || !s.userName || s.quizDone) return;
+    const gate = document.getElementById('quiz-gate');
+    if (!gate) return;
+    const div = document.createElement('div');
+    div.style.cssText = 'background:rgba(200,169,110,.1);border:1px solid rgba(200,169,110,.3);border-radius:8px;padding:12px 16px;margin-top:14px';
+    div.innerHTML = `<div style="font-size:.78rem;color:#c8a96e;margin-bottom:8px">Quiz-Fortschritt gefunden für <strong>${s.userName}</strong> (Frage ${s.currentQ + 1}/${QUESTIONS.length})</div>
+      <div style="display:flex;gap:8px">
+        <button onclick="continueQuiz1()" style="background:#c8a96e;color:#1d1a17;border:none;border-radius:5px;padding:7px 14px;cursor:pointer;font-size:.72rem;font-weight:600">Fortsetzen →</button>
+        <button onclick="clearQuiz1(this)" style="background:none;border:1px solid rgba(200,169,110,.4);color:#c8a96e;border-radius:5px;padding:7px 14px;cursor:pointer;font-size:.72rem">Neu starten</button>
+      </div>`;
+    gate.appendChild(div);
+  } catch(e) {}
+}
+function continueQuiz1() {
+  try {
+    const s = JSON.parse(localStorage.getItem(Q1_KEY));
+    if (!s) return;
+    userName = s.userName; currentQ = s.currentQ; answers = s.answers; quizDone = s.quizDone;
+    document.getElementById('quiz-gate').style.display      = 'none';
+    document.getElementById('quiz-questions').style.display = 'block';
+    renderQuestion();
+  } catch(e) {}
+}
+function clearQuiz1(btn) {
+  localStorage.removeItem(Q1_KEY);
+  btn?.closest('div[style]')?.remove();
+}
 
 function startQuiz() {
   const n = document.getElementById('user-name').value.trim();
@@ -1948,6 +1990,7 @@ function startQuiz() {
   currentQ = 0;
   answers  = [];
   quizDone = false;
+  localStorage.removeItem(Q1_KEY);
   document.getElementById('quiz-gate').style.display      = 'none';
   document.getElementById('quiz-questions').style.display = 'block';
   renderQuestion();
@@ -1988,38 +2031,47 @@ function selectAnswer(i) {
   if (answers[currentQ] !== undefined) return;
   const q = QUESTIONS[currentQ];
   answers[currentQ] = { chosen: i, correct: q.correct, isRight: i === q.correct };
+  saveQuiz1();
   renderQuestion();
 }
-function nextQ() { if (currentQ < QUESTIONS.length - 1) { currentQ++; renderQuestion(); } }
+function nextQ() { if (currentQ < QUESTIONS.length - 1) { currentQ++; saveQuiz1(); renderQuestion(); } }
 function prevQ() { if (currentQ > 0) { currentQ--; renderQuestion(); } }
 
 // ═══════════════════════════════════════════════
-// FINISH QUIZ → SAVE → SHOW TOKEN
+// FINISH QUIZ → GOOGLE SHEETS → TOKEN
 // ═══════════════════════════════════════════════
 async function finishQuiz() {
   quizDone = true;
+  saveQuiz1(); // save completed state
   const score = answers.filter(a => a.isRight).length;
   const total = QUESTIONS.length;
   const pct   = Math.round((score / total) * 100);
 
-  // Save to shared storage
-  const key = 'wude_s1_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+  // POST result to Google Sheets via Apps Script
   const record = {
+    action:    'save',
     name:      userName,
     score,
     total,
     pct,
     ts:        new Date().toISOString(),
-    answers:   answers.map((a,i) => ({ q: i+1, isRight: a.isRight }))
+    details:   answers.map((a,i) => (a.isRight ? '✓' : '✗')).join(' ')
   };
   try {
-    await window.storage.set(key, JSON.stringify(record), true);
-  } catch(e) { /* storage unavailable in some environments */ }
+    await fetch(SHEETS_URL, {
+      method:  'POST',
+      mode:    'no-cors',          // Apps Script requires no-cors
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(record)
+    });
+  } catch(e) {
+    console.warn('Sheets save failed:', e);
+  }
 
   // Build token
   buildToken(userName, score, total, pct);
 
-  // Build breakdown
+  // Build answer breakdown
   let sbHTML = `<div class="sb-header">Ihre Antworten</div>`;
   QUESTIONS.forEach((q, i) => {
     const a = answers[i];
@@ -2034,7 +2086,6 @@ async function finishQuiz() {
   document.getElementById('token-sub').textContent =
     `Sie haben ${score} von ${total} Fragen richtig beantwortet (${pct}%). Ihr Token für Session 1 wurde generiert.`;
 
-  // Show token tab (inject into nav)
   let tokenBtn = document.getElementById('token-tab-btn');
   if (!tokenBtn) {
     tokenBtn = document.createElement('button');
@@ -2050,6 +2101,7 @@ async function finishQuiz() {
 
 function retakeQuiz() {
   currentQ = 0; answers = []; quizDone = false;
+  localStorage.removeItem(Q1_KEY);
   document.getElementById('quiz-gate').style.display      = 'block';
   document.getElementById('quiz-questions').style.display = 'none';
   document.getElementById('user-name').value = userName;
@@ -2172,30 +2224,31 @@ function unlockCreator() {
 }
 
 async function loadCreatorData() {
+  document.getElementById('board-stats').innerHTML =
+    '<div class="bstat"><div class="bstat-num" style="font-size:1rem;color:var(--muted)">Lädt…</div></div>';
+  document.getElementById('results-table-wrap').innerHTML = '';
+
   let records = [];
   try {
-    const keys = await window.storage.list('wude_s1_', true);
-    if (keys && keys.keys) {
-      for (const k of keys.keys) {
-        try {
-          const r = await window.storage.get(k, true);
-          if (r) records.push({ key: k, ...JSON.parse(r.value) });
-        } catch(e) {}
-      }
-    }
-  } catch(e) {}
+    const resp = await fetch(SHEETS_URL + '?action=load');
+    const data = await resp.json();
+    records = data.records || [];
+  } catch(e) {
+    document.getElementById('results-table-wrap').innerHTML =
+      '<div class="empty-state">Verbindung zu Google Sheets fehlgeschlagen.<br>Prüfen Sie die SHEETS_URL in der HTML-Datei.</div>';
+    document.getElementById('board-stats').innerHTML = '';
+    return;
+  }
 
-  // Sort by timestamp desc
   records.sort((a,b) => (b.ts||'').localeCompare(a.ts||''));
 
-  // Stats
-  const avg = records.length ? Math.round(records.reduce((s,r)=>s+r.pct,0)/records.length) : 0;
-  const top  = records.length ? Math.max(...records.map(r=>r.pct)) : 0;
+  const avg = records.length ? Math.round(records.reduce((s,r)=>s+(r.pct||0),0)/records.length) : 0;
+  const top  = records.length ? Math.max(...records.map(r=>r.pct||0)) : 0;
   document.getElementById('board-stats').innerHTML = `
     <div class="bstat"><div class="bstat-num">${records.length}</div><div class="bstat-lbl">Teilnahmen</div></div>
     <div class="bstat"><div class="bstat-num">${avg}%</div><div class="bstat-lbl">Ø Ergebnis</div></div>
     <div class="bstat"><div class="bstat-num">${top}%</div><div class="bstat-lbl">Bestes Ergebnis</div></div>
-    <div class="bstat"><div class="bstat-num">${records.filter(r=>r.pct>=80).length}</div><div class="bstat-lbl">Ausgezeichnet</div></div>
+    <div class="bstat"><div class="bstat-num">${records.filter(r=>(r.pct||0)>=80).length}</div><div class="bstat-lbl">Ausgezeichnet</div></div>
   `;
 
   if (!records.length) {
@@ -2206,32 +2259,30 @@ async function loadCreatorData() {
 
   let html = `<table class="result-table">
     <thead><tr>
-      <th>Name</th><th>Ergebnis</th><th>Prozent</th><th>Richtig</th><th>Zeitpunkt</th>
+      <th>Name</th><th>Ergebnis</th><th>Prozent</th><th>Details</th><th>Zeitpunkt</th>
     </tr></thead><tbody>`;
   records.forEach(r => {
-    const cls = r.pct >= 80 ? '' : r.pct >= 60 ? 'mid' : 'low';
+    const cls = (r.pct||0) >= 80 ? '' : (r.pct||0) >= 60 ? 'mid' : 'low';
     const dt  = r.ts ? new Date(r.ts).toLocaleString('de-DE') : '—';
     html += `<tr>
       <td>${escapeXml(r.name||'—')}</td>
       <td><span class="score-badge ${cls}">${r.score||0}/${r.total||10}</span></td>
       <td>${r.pct||0}%</td>
-      <td>${r.pct >= 60 ? '✓' : '—'}</td>
+      <td style="font-family:var(--mono);font-size:0.7rem;color:var(--muted);letter-spacing:0.05em;">${r.details||'—'}</td>
       <td style="font-family:var(--mono);font-size:0.72rem;">${dt}</td>
     </tr>`;
   });
   html += '</tbody></table>';
   document.getElementById('results-table-wrap').innerHTML = html;
-
-  // store for CSV
   window._creatorRecords = records;
 }
 
 function exportCSV() {
   const records = window._creatorRecords || [];
   if (!records.length) { showNotif('Keine Daten vorhanden.'); return; }
-  let csv = 'Name,Score,Total,Prozent,Zeitpunkt\n';
+  let csv = 'Name,Score,Total,Prozent,Details,Zeitpunkt\n';
   records.forEach(r => {
-    csv += `"${(r.name||'').replace(/"/g,'""')}",${r.score||0},${r.total||10},${r.pct||0},"${r.ts||''}"\n`;
+    csv += `"${(r.name||'').replace(/"/g,'""')}",${r.score||0},${r.total||10},${r.pct||0},"${r.details||''}","${r.ts||''}"\n`;
   });
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
@@ -2243,15 +2294,17 @@ function exportCSV() {
 async function clearResults() {
   if (!confirm('Wirklich alle Ergebnisse löschen?')) return;
   try {
-    const keys = await window.storage.list('wude_s1_', true);
-    if (keys && keys.keys) {
-      for (const k of keys.keys) {
-        try { await window.storage.delete(k, true); } catch(e) {}
-      }
-    }
-  } catch(e) {}
-  showNotif('Alle Ergebnisse gelöscht.');
-  loadCreatorData();
+    await fetch(SHEETS_URL, {
+      method:  'POST',
+      mode:    'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ action: 'clear' })
+    });
+    showNotif('Löschbefehl gesendet — bitte kurz warten und neu laden.');
+  } catch(e) {
+    showNotif('Fehler beim Löschen.');
+  }
+  setTimeout(loadCreatorData, 2000);
 }
 
 // ═══════════════════════════════════════════════
@@ -2263,6 +2316,9 @@ function showNotif(msg) {
   el.classList.add('show');
   setTimeout(() => el.classList.remove('show'), 2800);
 }
+
+// Resume check
+document.addEventListener('DOMContentLoaded', checkQuizResume1);
 </script>
 </body>
 </html>
